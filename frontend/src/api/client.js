@@ -2,8 +2,10 @@
    API Client — Centralized fetch wrapper for FastAPI backend
    ============================================================ */
 
-// Base URL for the FastAPI backend (change in production)
-const API_BASE = 'http://localhost:8000';
+// Base URL for the FastAPI backend. 
+// Uses the VITE_API_BASE_URL environment variable if set (for production), 
+// otherwise falls back to localhost for local development.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 /**
  * Generic fetch wrapper with error handling
