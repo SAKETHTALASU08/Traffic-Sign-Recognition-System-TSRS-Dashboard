@@ -176,15 +176,11 @@ app = FastAPI(
 # domain(s) and remove the wildcard headers/methods.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server (default port)
-        "http://127.0.0.1:5173",  # Vite dev server (IP)
-        "http://localhost:3000",  # Create React App / alternative dev server
-        "http://127.0.0.1:3000",  # Create React App (IP)
-    ],
-    allow_credentials=True,  # Allow cookies if needed for auth in the future
-    allow_methods=["*"],      # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],      # Allow all headers (Content-Type, Authorization, etc.)
+    allow_origins=["*"],  # Allow all origins (localhost + Render production frontend)
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
+    allow_methods=["*"],      # Allow all HTTP methods
+    allow_headers=["*"],      # Allow all headers
+
 )
 
 
