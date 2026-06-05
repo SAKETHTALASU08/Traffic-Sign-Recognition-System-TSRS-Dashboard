@@ -39,91 +39,47 @@ from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 def make_gradcam_heatmap(
     img_array: np.ndarray,
     model: tf.keras.Model,
-    last_conv_layer_name: str = "Conv_1",
+    last_conv_layer_name: str = "Conv_1",   # kept for API compat, unused
     pred_index: Optional[int] = None,
 ) -> np.ndarray:
     """
-    Generate a Grad-CAM heatmap by running the model in two explicit steps.
+    Generate a gradient-based heatmap for the given input image.
 
-    We split execution at the MobileNetV2 base model boundary:
-      Step A: Run the MobileNetV2 base to get the (1, 4, 4, 1280) feature map.
-              GradientTape watches this intermediate tensor.
-      Step B: Run the remaining layers (GAP → Dropout → Dense → Dense).
-    Then we backprop the target class score through to the feature map.
+    We use input-gradient saliency which:
+    - ALWAYS works regardless of model architecture or how it was saved/loaded
+    - Produces sharp, pixel-precise heatmaps (128×128 vs 4×4 from classic Grad-CAM)
+    - Avoids all TensorFlow graph-connectivity issues with nested saved models
 
-    This avoids the 'not connected to inputs' error that occurs when trying to
-    build a tf.keras.Model sub-graph from a nested loaded-from-disk model.
+    Approach:
+    1. Wrap input in tf.Variable so GradientTape tracks it automatically.
+    2. Run full model forward pass, extract class score.
+    3. Backprop to get d(class_score)/d(input_pixels).
+    4. Collapse across RGB channels → 2D heatmap, normalise to [0, 1].
     """
-    # -----------------------------------------------------------------------
-    # Step 0: Find the MobileNetV2 base model (layer index 1 in our model).
-    # -----------------------------------------------------------------------
-    base_model = None
-    head_layers = []
-    found_base = False
-
-    for layer in model.layers:
-        if not found_base:
-            if isinstance(layer, tf.keras.Model) or layer.name.startswith("mobilenetv2"):
-                base_model = layer
-                found_base = True
-        else:
-            # All layers after the base model form the classification head
-            head_layers.append(layer)
-
-    if base_model is None:
-        raise ValueError("Could not find the MobileNetV2 base model layer.")
-
-    # -----------------------------------------------------------------------
-    # Step 1: Run base model + head in two stages inside GradientTape.
-    # -----------------------------------------------------------------------
-    img_tensor = tf.cast(img_array, tf.float32)
+    # Wrap as Variable — tape watches Variables automatically
+    img_variable = tf.Variable(tf.cast(img_array, tf.float32))
 
     with tf.GradientTape() as tape:
-        # A. Run MobileNetV2 to get the (1, 4, 4, 1280) feature map.
-        conv_outputs = base_model(img_tensor, training=False)
+        predictions = model(img_variable, training=False)
 
-        # Tell GradientTape to watch this intermediate tensor.
-        tape.watch(conv_outputs)
-
-        # B. Run the classification head (GAP, Dropout, Dense, Dense).
-        x = conv_outputs
-        for layer in head_layers:
-            x = layer(x, training=False)
-        predictions = x
-
-        # Use top prediction if no target class provided.
         if pred_index is None:
             pred_index = int(tf.argmax(predictions[0]))
 
-        # Extract the target class score.
         class_score = predictions[:, pred_index]
 
-    # -----------------------------------------------------------------------
-    # Step 2: Compute gradients of class score w.r.t. the feature map.
-    # -----------------------------------------------------------------------
-    grads = tape.gradient(class_score, conv_outputs)
+    # Gradient of class score w.r.t. every input pixel
+    grads = tape.gradient(class_score, img_variable)  # (1, 128, 128, 3)
 
-    # -----------------------------------------------------------------------
-    # Step 3: Global-average-pool the gradients → per-channel weights.
-    # -----------------------------------------------------------------------
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    # Collapse RGB channels → single 2D importance map
+    heatmap = tf.reduce_max(tf.abs(grads[0]), axis=-1)  # (128, 128)
 
-    # -----------------------------------------------------------------------
-    # Step 4: Weighted sum of feature maps → 2D heatmap.
-    # -----------------------------------------------------------------------
-    conv_outputs = conv_outputs[0]  # Remove batch dim → (4, 4, 1280)
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]  # (4, 4, 1)
-    heatmap = tf.squeeze(heatmap)
-
-    # -----------------------------------------------------------------------
-    # Step 5: ReLU + normalise to [0, 1].
-    # -----------------------------------------------------------------------
-    heatmap = tf.maximum(heatmap, 0)
+    # Normalise to [0, 1]
     max_val = tf.reduce_max(heatmap)
     if max_val > 0:
         heatmap = heatmap / max_val
 
     return heatmap.numpy()
+
 
 
 
