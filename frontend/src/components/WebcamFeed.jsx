@@ -40,7 +40,15 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        // Wait for the video to actually have pixel dimensions before marking active.
+        // This prevents capturing an empty black frame.
+        await new Promise((resolve) => {
+          videoRef.current.onloadedmetadata = () => {
+            videoRef.current.play().then(resolve).catch(resolve);
+          };
+        });
+        // Extra safety: wait a tick for the first frame to render
+        await new Promise(r => setTimeout(r, 300));
       }
 
       setIsActive(true);
@@ -80,6 +88,13 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
     const canvas = canvasRef.current;
 
     if (!canvas) return;
+
+    // Guard: if video hasn't loaded dimensions yet, retry after 500ms
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      console.warn('Video not ready yet, retrying capture in 500ms...');
+      setTimeout(captureFrame, 500);
+      return;
+    }
 
     // Set canvas size to match video
     canvas.width = video.videoWidth;

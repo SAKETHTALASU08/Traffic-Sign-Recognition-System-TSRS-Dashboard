@@ -16,14 +16,21 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 async function apiFetch(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`;
 
+  // 90-second timeout: Render free tier can take up to 60s to wake from sleep.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 90000);
+
   try {
     const response = await fetch(url, {
       ...options,
+      signal: controller.signal,
       // Don't set Content-Type for FormData — browser does it automatically
       headers: options.body instanceof FormData
         ? options.headers || {}
         : { 'Content-Type': 'application/json', ...options.headers },
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
@@ -32,9 +39,12 @@ async function apiFetch(endpoint, options = {}) {
 
     return await response.json();
   } catch (error) {
-    // Re-throw with more context if it's a network error
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error('Request timed out. The server may be waking up — please try again in 10 seconds.');
+    }
     if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
-      throw new Error('Cannot connect to the backend server. Make sure it is running on http://localhost:8000');
+      throw new Error('Cannot connect to the backend server. Make sure the backend is running.');
     }
     throw error;
   }

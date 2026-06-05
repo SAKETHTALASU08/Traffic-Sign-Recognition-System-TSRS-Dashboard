@@ -178,7 +178,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",  # Vite dev server (default port)
+        "http://127.0.0.1:5173",  # Vite dev server (IP)
         "http://localhost:3000",  # Create React App / alternative dev server
+        "http://127.0.0.1:3000",  # Create React App (IP)
     ],
     allow_credentials=True,  # Allow cookies if needed for auth in the future
     allow_methods=["*"],      # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
