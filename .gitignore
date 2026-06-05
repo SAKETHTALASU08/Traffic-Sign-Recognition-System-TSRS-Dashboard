@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.idea/
+.DS_Store
+
+# Ignore large training data
+data/
+test_images/
+GTSRB_Training.zip
+*.csv
+
+# Ignore old flask files
+app.py
+templates/
+uploads/
+
+# We DO want to commit the model folder because Render needs it
+# model/

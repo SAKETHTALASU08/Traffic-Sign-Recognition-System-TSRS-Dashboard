@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+tensorflow-macos; sys_platform == 'darwin' and platform_machine == 'arm64'
+tensorflow; sys_platform != 'darwin' or platform_machine != 'arm64'
+Pillow
+numpy
+# CRITICAL for Render: Use headless OpenCV to avoid missing libGL errors
+opencv-python-headless
