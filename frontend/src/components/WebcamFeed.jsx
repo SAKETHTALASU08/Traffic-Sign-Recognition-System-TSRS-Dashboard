@@ -1,75 +1,80 @@
 /* ============================================================
    WebcamFeed — Live webcam capture for real-time ADAS simulation
-   Uses navigator.mediaDevices.getUserMedia API
-   Features: scanning overlay, corner brackets, capture button
+   Fixed: video element always in DOM so ref is never null.
+   Fixed: mobile Safari autoplay, playsInline, muted attributes.
+   Fixed: proper facingMode fallback for iOS.
    ============================================================ */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Camera, CameraOff, RefreshCw, Aperture } from 'lucide-react';
 
-/**
- * @param {object} props
- * @param {function} props.onCapture - Called with captured data URL when user clicks capture
- * @param {boolean} props.disabled - Disable capture during processing
- */
 export default function WebcamFeed({ onCapture, disabled = false }) {
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState(null);
-  const [facingMode, setFacingMode] = useState('environment'); // 'user' for front cam
+  const [facingMode, setFacingMode] = useState('environment');
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const canvasRef = useRef(null);
 
-  /**
-   * Start the webcam stream
-   */
+  // Attach stream to video element whenever isActive or stream changes
+  useEffect(() => {
+    if (isActive && streamRef.current && videoRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch((e) => {
+        console.error('Video play error:', e);
+      });
+    }
+  }, [isActive]);
+
   const startCamera = useCallback(async () => {
     try {
       setError(null);
-      const constraints = {
-        video: {
-          facingMode,
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-        },
-        audio: false,
-      };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        // Wait for the video to actually have pixel dimensions before marking active.
-        // This prevents capturing an empty black frame.
-        await new Promise((resolve) => {
-          videoRef.current.onloadedmetadata = () => {
-            videoRef.current.play().then(resolve).catch(resolve);
-          };
-        });
-        // Extra safety: wait a tick for the first frame to render
-        await new Promise(r => setTimeout(r, 300));
+      // Stop any existing stream first
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
       }
 
+      let stream = null;
+
+      // Try with preferred facingMode first, fall back to any camera
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
+        });
+      } catch {
+        // Fallback: try without facingMode constraint (works on most desktops & older mobiles)
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
+
+      streamRef.current = stream;
+
+      // Set isActive TRUE first so the video element renders in the DOM
       setIsActive(true);
+
+      // The useEffect above will attach the stream once the element is mounted
     } catch (err) {
       console.error('Webcam error:', err);
-      if (err.name === 'NotAllowedError') {
-        setError('Camera access denied. Please allow camera permissions in your browser.');
-      } else if (err.name === 'NotFoundError') {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError('Camera access denied. Please allow camera permissions and try again.');
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
         setError('No camera found on this device.');
+      } else if (err.name === 'NotReadableError') {
+        setError('Camera is already in use by another app. Please close it and retry.');
       } else {
-        setError('Failed to access camera. Please try again.');
+        setError(`Failed to access camera: ${err.message}`);
       }
     }
   }, [facingMode]);
 
-  /**
-   * Stop the webcam stream
-   */
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
     if (videoRef.current) {
@@ -78,54 +83,46 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
     setIsActive(false);
   }, []);
 
-  /**
-   * Capture a frame from the video stream
-   */
   const captureFrame = useCallback(() => {
-    if (!videoRef.current || !isActive || disabled) return;
-
     const video = videoRef.current;
     const canvas = canvasRef.current;
+    if (!video || !canvas || !isActive || disabled) return;
 
-    if (!canvas) return;
-
-    // Guard: if video hasn't loaded dimensions yet, retry after 500ms
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
-      console.warn('Video not ready yet, retrying capture in 500ms...');
+    // If video hasn't loaded metadata yet, retry in 500ms
+    if (video.videoWidth === 0 || video.videoHeight === 0 || video.readyState < 2) {
+      console.warn('Video not ready, retrying in 500ms...');
       setTimeout(captureFrame, 500);
       return;
     }
 
-    // Set canvas size to match video
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
-
-    // Convert to data URL (JPEG for smaller size)
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
     onCapture(dataUrl);
   }, [isActive, disabled, onCapture]);
 
-  /**
-   * Toggle between front and rear cameras
-   */
   const toggleCamera = useCallback(async () => {
-    stopCamera();
-    setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
-  }, [stopCamera]);
-
-  // Restart camera when facingMode changes
-  useEffect(() => {
-    if (isActive || facingMode !== 'environment') {
-      // Small delay to allow previous stream to fully stop
-      const timer = setTimeout(() => {
-        if (facingMode !== 'environment' || isActive) {
-          startCamera();
-        }
-      }, 100);
-      return () => clearTimeout(timer);
+    const newMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newMode);
+    // Stop current stream, restart with new facing mode
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: newMode },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(console.error);
+      }
+    } catch (e) {
+      console.error('Toggle camera error:', e);
     }
   }, [facingMode]);
 
@@ -133,7 +130,7 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
   useEffect(() => {
     return () => {
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current.getTracks().forEach(t => t.stop());
       }
     };
   }, []);
@@ -143,16 +140,23 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
       {/* Hidden canvas for frame capture */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
-      {isActive ? (
-        /* ---- Active Webcam View ---- */
-        <div className="webcam-container">
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            style={{ width: '100%', display: 'block' }}
-          />
+      {/*
+        CRITICAL FIX: The video element is ALWAYS in the DOM.
+        Previously it was inside the {isActive ? ...} block, making
+        videoRef.current null when startCamera ran. Now we just
+        toggle visibility with CSS.
+      */}
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        autoPlay
+        style={{ display: isActive ? 'block' : 'none', width: '100%' }}
+      />
 
+      {isActive ? (
+        /* ---- Active Webcam Overlay (controls on top of video) ---- */
+        <div className="webcam-active-ui">
           {/* Scanning overlay effects */}
           <div className="webcam-overlay">
             <div className="webcam-scan-line" />
@@ -199,14 +203,14 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
         </div>
       ) : (
         /* ---- Inactive / Start View ---- */
-        <div className="webcam-inactive" onClick={startCamera}>
+        <div className="webcam-inactive">
           {error ? (
             <div className="webcam-error">
               <CameraOff size={40} />
               <p className="text-sm" style={{ color: 'var(--accent-red)', textAlign: 'center', maxWidth: 280 }}>
                 {error}
               </p>
-              <button className="btn btn-secondary" onClick={(e) => { e.stopPropagation(); startCamera(); }}>
+              <button className="btn btn-secondary" onClick={startCamera}>
                 Retry
               </button>
             </div>
@@ -219,7 +223,7 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
               <p className="text-sm text-muted">
                 Activate webcam for real-time sign detection
               </p>
-              <button className="btn btn-primary mt-md" onClick={(e) => { e.stopPropagation(); startCamera(); }}>
+              <button className="btn btn-primary mt-md" onClick={startCamera}>
                 <Camera size={16} />
                 Start Camera
               </button>
@@ -231,6 +235,18 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
       <style>{`
         .webcam-wrapper {
           width: 100%;
+          position: relative;
+        }
+
+        /* Active UI sits on top of the always-rendered video element */
+        .webcam-active-ui {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+        }
+
+        .webcam-active-ui .webcam-controls {
+          pointer-events: all;
         }
 
         .webcam-inactive {
@@ -341,6 +357,15 @@ export default function WebcamFeed({ onCapture, disabled = false }) {
         .webcam-capture-btn:disabled {
           opacity: 0.5;
           cursor: not-allowed;
+        }
+
+        /* Video border when active */
+        video {
+          border-radius: var(--radius-xl);
+          border: 1px solid var(--border-subtle);
+          background: #000;
+          min-height: 280px;
+          object-fit: cover;
         }
       `}</style>
     </div>
